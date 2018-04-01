@@ -13,6 +13,7 @@ library(janitor)
 library(anytime)
 ```
 
+NB uue rogain andmed tuleb lõpuks panna kokku 2018 I etapi andmetega "data/xt_rogain_201801.RData"
 
 Lisa käsitsi viimase XT rogaini osavõistluse tulemuste lehe url
 ```{r}
