@@ -84,7 +84,9 @@ ui <- fluidPage(
         tabPanel("Punktide võtmine 30 min",
                  # plotOutput("punktid_cum"),
                  plotOutput("punktid_30", height = 600)
-        )
+        ),
+        tabPanel("Info",
+                 includeMarkdown("~/Dropbox/DataScience/R/xt_rogain/shiny/kirjeldus.md"))
       )
     )
   )
