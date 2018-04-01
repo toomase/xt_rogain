@@ -1,0 +1,304 @@
+---
+title: "XT rogaini tulemuste analüüs"
+output: html_notebook
+---
+
+Analüüsi XT rogaini sarja andmeid ja testi erinevaid visualisatsioone.
+```{r}
+library(tidyverse)
+library(lubridate)
+library(tibbletime)
+library(padr)
+library(hrbrthemes)
+library(ggrepel)
+
+# lae xt rogaini sarja andmed arhiivist
+load("data/xt_rogain.RData")
+
+# lae jooksva aasta rogaini sarja andmed, mida kraabin ükshaaval
+load("data/xt_rogain_201801.RData")
+```
+
+Pane arhiivi ja jooksva aasta andmed kokku
+```{r}
+xt_rogain <- xt_rogain %>% 
+  bind_rows(xt_rogain_201801) %>% 
+  distinct(nimi, voistlus, asukoht, voistleja, vaheaja_kell, punktid, distants, kp_nr,
+           .keep_all = TRUE)
+```
+
+
+Tutvu andmetega
+```{r}
+glimpse(xt_rogain)
+```
+
+Kes võistkondadest on kõige rohkem rogainidel osalenud?
+```{r}
+xt_rogain %>% 
+  distinct(nimi, tulemuste_url) %>% 
+  count(nimi, sort = TRUE)
+```
+
+Lisa paremini kirjeldav nimi igale võistlusele
+```{r}
+xt_rogain_toodeldud <- xt_rogain %>% 
+  filter(ala == "jooks", !is.na(vaheaja_kell)) %>% 
+  mutate(asukoht = str_to_title(ifelse(str_detect(asukoht, "ROCCA"), asukoht, word(asukoht, 1))),
+         asukoht = str_replace_all(asukoht, ",", ""),
+         voistlus = str_c(asukoht, format(kuupaev, "%d.%m.%y"), sep = ", "),
+         voistlus = fct_reorder(as.factor(voistlus), kuupaev)) %>% 
+  rename(voistkond = nimi) %>% 
+  select(-nr, -klass, -koht_klassis, -ala, -tulemuste_url,
+         -aeg, -trahv, -asukoht, -kuupaev, -voistkonna_tulemuste_url,
+         -kp_nr) %>% 
+  arrange(voistlus, voistkond, voistleja, vaheaja_kell) %>% 
+  thicken(interval = "1 mins") %>% 
+  select(-vaheaja_kell) %>% 
+  group_by(voistkond, voistleja, voistlus, vaheaja_kell_min,
+           tulemus, koht) %>%
+  summarise_all(sum, na.rm = TRUE) %>% 
+  group_by(voistlus, voistleja) %>% 
+  mutate(punktid_cum = cumsum(punktid)) %>% 
+  group_by(voistlus, voistleja) %>%
+  mutate(start = min(vaheaja_kell_min),
+         aeg_stardist = difftime(vaheaja_kell_min, start, units = "secs")) %>% 
+  ungroup() %>% 
+  mutate(aeg_stardist = hms::as.hms(aeg_stardist))
+```
+
+Salvesta tulemus Shiny äpis kasutamiseks
+```{r}
+save(xt_rogain_toodeldud, file = "shiny/xt_rogain.RData")
+```
+
+
+
+
+##### Katsetused grafaikutega ja andmetega ####
+
+
+```{r}
+valitud_voistleja <- "Eilat"
+valitud_voistlus <- "Taevaskoja"
+```
+
+
+```{r}
+xt_rogain_30_min <- xt_rogain_toodeldud %>% 
+  filter(str_detect(voistleja, valitud_voistleja) | koht <= 3) %>% 
+  thicken(by = "vaheaja_kell_min", interval = "30 mins", rounding = "up") %>% 
+  select(-aeg_stardist) %>% 
+  group_by(voistkond, voistlus, voistleja, vaheaja_kell_min_30_min, start, koht) %>%
+  summarise_all(sum, na.rm = TRUE) %>% 
+  group_by(voistlus, voistleja) %>%
+  mutate(aeg_stardist = difftime(vaheaja_kell_min_30_min, start, units = "secs")) %>% 
+  ungroup() %>% 
+  mutate(aeg_stardist = hms::as.hms(aeg_stardist))
+```
+
+
+Tee tibbletime objekt, mille abil on parem analüüsi teha.
+Detailsuseks on 1 minut.
+Ainult jooksu võistlused.
+Jäta alles ainult vajalikud veerud.
+```{r}
+xt_rogain_time <- xt_rogain_toodeldud %>% 
+  filter(ala == "jooks") %>% 
+  select(voistkond = nimi, voistleja, voistlus, vaheaja_kell,
+         punktid, distants, koht) %>% 
+  thicken(interval = "1 mins") %>%  # ümarda 1 min täpsuseks
+  select(-vaheaja_kell) %>% 
+  # lisa iga 1 min tagant üks rida andmetesse
+  pad(interval = "1 mins", group = c("voistkond", "voistleja", "voistlus", "koht")) %>% 
+  as_tbl_time(index = vaheaja_kell_min) %>%  # tee tibbeltime objektiks
+  filter(!is.na(vaheaja_kell_min))
+```
+
+Lisa võrdluseks juure ühtlaselt jaotunud punktide võtmine.
+Shiny äpis saaks valida võistkonna ja võistluse ja siis kuvatakse heledalt taustal kõigi võistluste tulemuste joon, tumedalt valitud võistluse punktide korjamine ja võrdluseks kõrvale valitud võistluse punktide jaotamine ühtlaselt võiustluse peale.
+```{r}
+valitud_voistleja_voistlused <- xt_rogain_toodeldud %>% 
+  filter(str_detect(voistleja, valitud_voistleja))
+
+valitud_voistleja_valitud_voistlus <- valitud_voistleja_voistlused %>% 
+  filter(str_detect(voistlus, valitud_voistlus))
+
+liidrid <- xt_rogain_toodeldud %>% 
+  filter(str_detect(voistlus, valitud_voistlus),
+         koht <= 3) %>% 
+  distinct(voistkond, punktid, distants, vaheaja_kell_min, .keep_all = TRUE)
+
+valitud_voistleja_voistlused %>%
+  ggplot(aes(aeg_stardist, punktid_cum, group = str_c(voistkond, voistlus))) +
+  geom_step(color = "grey") +
+  geom_step(data = liidrid, color = "#377eb8") +
+  geom_step(data = valitud_voistleja_valitud_voistlus, color = "#e41a1c",
+            size = 1.2) +
+  scale_x_time(breaks = seq(0, 3600 * 10, 3600),
+               labels = function(x) str_c(hour(x), "H")) +
+  geom_text_repel(data = valitud_voistleja_valitud_voistlus %>%
+                    filter(vaheaja_kell_min == max(vaheaja_kell_min)),
+                  aes(label = str_c(punktid_cum, "p (", koht, ". koht)")), 
+                  nudge_x = 5, color = "#e41a1c") +
+  geom_text_repel(data = liidrid %>%
+                    filter(koht == 2) %>% 
+                    filter(vaheaja_kell_min == max(vaheaja_kell_min)),
+                  aes(label = "Võistluse top 3"), 
+                  nudge_x = 5, color = "#377eb8") +
+  theme_ipsum_rc() +
+  theme(legend.position = "none") +
+  labs(title = "Kumulatiivne punktide võtmine rogainil",
+       subtitle = valitud_voistlus,
+       x = "aeg stardist")
+
+```
+
+Kuidas jaotub punktide võtmine 30min lõikuda kaupa? Kas rohkem võtame punkte alguses või lõpus või on jaotus ühtlane?
+```{r}
+valitud_voistleja_voistlused_30 <- xt_rogain_30_min %>% 
+  filter(str_detect(voistleja, valitud_voistleja))
+
+valitud_voistleja_valitud_voistlus_30 <- valitud_voistleja_voistlused_30 %>% 
+  filter(str_detect(voistlus, valitud_voistlus))
+
+liidrid_30 <- xt_rogain_30_min %>% 
+  filter(str_detect(voistlus, valitud_voistlus),
+         koht <= 3) %>% 
+  distinct(voistkond, punktid, distants, vaheaja_kell_min, .keep_all = TRUE)
+
+valitud_voistleja_voistlused_30 %>% 
+  ggplot(aes(aeg_stardist, punktid, group = str_c(voistkond, voistlus))) +
+  geom_point(color = "grey", size = 0.7) +
+  geom_line(color = "grey", size = 0.2) +
+  geom_point(data = liidrid_30, color = "#377eb8", size = 1.2) +
+  geom_line(data = liidrid_30, color = "#377eb8", size = 1, alpha = 0.7) +
+  geom_point(data = valitud_voistleja_valitud_voistlus_30, color = "#e41a1c",
+            size = 2) +
+  geom_line(data = valitud_voistleja_valitud_voistlus_30, color = "#e41a1c",
+            size = 1) +
+  scale_x_time(breaks = seq(0, 3600 * 10, 3600),
+               labels = function(x) str_c(hour(x), "H")) +
+  theme_ipsum_rc() +
+  labs(title = "Punktide võtmine rogainil",
+       subtitle = valitud_voistlus,
+       x = "aeg stardist")
+```
+
+```{r}
+# Funktsioon, mille abil saab valitud skaala tekstid muuda boldiks
+# https://stackoverflow.com/questions/39694490/highlighting-individual-axis-labels-in-bold-using-ggplot2?utm_medium=organic&utm_source=google_rich_qa&utm_campaign=google_rich_qa
+make_bold <- function(src, boulder) {
+  if (!is.factor(src)) src <- factor(src)                   # make sure it's a factor
+  src_levels <- levels(src)                                 # retrieve the levels in their order
+  brave <- boulder %in% src_levels                          # make sure everything we want to make bold is actually in the factor levels
+  if (all(brave)) {                                         # if so
+    b_pos <- purrr::map_int(boulder, ~which(.==src_levels)) # then find out where they are
+    b_vec <- rep("plain", length(src_levels))               # make'm all plain first
+    b_vec[b_pos] <- "bold"                                  # make our targets bold
+    b_vec                                                   # return the new vector
+  } else {
+    stop("All elements of 'boulder' must be in src")
+  }
+}
+
+tulemus_kokku <- xt_rogain_toodeldud %>% 
+  filter(str_detect(voistleja, "Eilat") | koht <= 3) %>% 
+  mutate(tunnus = ifelse(str_detect(voistleja, "Eilat"), 1, 0)) %>% 
+  distinct(voistkond, voistlus, tulemus, koht, tunnus) %>% 
+  arrange(voistlus, koht) %>% 
+  group_by(tunnus, voistlus) %>% 
+  mutate(tulemus_mean = round(mean(tulemus, na.rm = TRUE), 0)) %>% 
+  ungroup() %>% 
+  group_by(voistlus) %>% 
+  filter(sum(tunnus) != 0) %>% 
+  mutate(protsent_esikolmiku_punktidest = tulemus / max(tulemus_mean)) %>% 
+  ungroup()
+
+cols <- c("Valitud võistkond" = "#fc9272", "Võistluse top 3" = "#377eb8")
+
+tulemus_punktid <- tulemus_kokku %>% 
+  ggplot(aes(voistlus, tulemus, group = voistkond, color = "Valitud võistkond")) +
+  geom_point(aes(color = "Võistluse top 3"), alpha = 0.5) +
+  geom_point(data = tulemus_kokku %>% 
+               filter(str_detect(voistkond, "Sneaky")), aes(color = "Valitud võistkond"),
+             size = 2) +
+  geom_point(data = tulemus_kokku %>% 
+               filter(str_detect(voistkond, "Sneaky"),
+                      voistlus == "Tallinn, 19.03.16"), color = "#e41a1c",
+             size = 3) +
+  geom_text_repel(data = tulemus_kokku %>% 
+                    filter(str_detect(voistkond, "Sneaky")),
+                  aes(label = tulemus), color = "#e41a1c", size = 3) +
+  scale_colour_manual(name = "", values = cols) +
+  coord_flip() +
+  theme_ipsum_rc() +
+  labs(title = "Punktid kokku rogainil",
+       subtitle = "",
+       x = "",
+       y = "punktid kokku") +
+  theme(axis.text.y = element_text(face = make_bold(unique(factor(tulemus_kokku$voistlus)), 
+                                                    "Tallinn, 19.03.16")),
+        legend.position = c(0, 1), 
+        legend.justification = c(0, 0),
+        legend.direction = "horizontal")
+
+tulemus_punktid
+```
+
+
+```{r}
+tulemus_osakaal <- tulemus_kokku %>% 
+  filter(str_detect(voistkond, "Sneaky")) %>% 
+  ggplot(aes(voistlus, protsent_esikolmiku_punktidest)) +
+  geom_point(color = "#fc9272") +
+  geom_point(data = tulemus_kokku %>% 
+               filter(str_detect(voistkond, "Sneaky"),
+                      voistlus == "Tallinn, 19.03.16"), color = "#e41a1c",
+             size = 3) +
+  geom_text_repel(data = tulemus_kokku %>% 
+                    filter(str_detect(voistkond, "Sneaky")),
+                  aes(label = str_c(round(protsent_esikolmiku_punktidest * 100, 0), "%")), 
+                      color = "#e41a1c", size = 3.5) +
+  coord_flip() +
+  theme_ipsum_rc() +
+  labs(title = "Punktide % ja koht võistlusel",
+       subtitle = "Punktide osakaal top3 võistkonna punktidest",
+       x = "",
+       y = "punktide osakaal") +
+  scale_y_percent(expand = c(0.01, 0.01)) +
+  theme(axis.text.y = element_text(face = make_bold(unique(factor(tulemus_kokku$voistlus)), 
+                                                    "Tallinn, 19.03.16")))
+
+tulemus_osakaal
+```
+
+```{r}
+tulemus_koht <- tulemus_kokku %>% 
+  filter(str_detect(voistkond, "Sneaky")) %>% 
+  ggplot(aes(voistlus, koht)) +
+  geom_point(color = "#fc9272") +
+  geom_point(data = tulemus_kokku %>% 
+               filter(str_detect(voistkond, "Sneaky"),
+                      voistlus == "Tallinn, 19.03.16"), color = "#e41a1c",
+             size = 3) +
+  geom_text_repel(data = tulemus_kokku %>% 
+                    filter(str_detect(voistkond, "Sneaky")),
+                  aes(label = koht), 
+                      color = "#e41a1c", size = 3.5) +
+  coord_flip() +
+  theme_ipsum_rc() +
+  scale_y_reverse() +
+  labs(title = "",
+       subtitle = "Koht võistlusel",
+       x = "",
+       y = "mitmes koht") +
+  theme(axis.text.y = element_blank(),
+        plot.margin = unit(c(1, 1, 1, 1), "cm"))
+
+tulemus_koht
+```
+
+```{r, fig.width=12, fig.height=6}
+wrap_plots(list(tulemus_osakaal, tulemus_koht), widths = c(2.5, 2))
+```

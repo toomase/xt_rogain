@@ -1,0 +1,261 @@
+---
+title: "Kraabi XT rogaini sarja tulemused"
+output: html_notebook
+---
+
+Kraabi XT rogaini detailsed tulemused, et andmete peale ehitada shiny äpp, mille abil võrrelda erinevate võistkondade tulemusi ja võistlejate arengu trendi.
+Andmed pärinevad [XTsport](http://www.xtsport.ee/) lehelt.
+
+```{r setup}
+library(rvest)
+library(tidyverse)
+library(janitor)
+library(anytime)
+```
+
+Iga aasta rogainide leheküljed
+```{r}
+aastad_url <- str_c("http://www.xtsport.ee/arhiiv/", seq(2012, 2018, 1), "-2")
+```
+
+Funktsioon, mis pärib kõigi vastava aasta rogainide alamlehtede url-d
+```{r}
+kraabi_alamlehe_url <- function(x){
+  alamlehe_url <- read_html(x) %>% 
+    html_nodes("#nav-side a") %>% 
+    html_attr("href") %>% 
+    as_tibble()
+  
+  return(alamlehe_url)
+}
+
+kraabi_alamlehe_url_possibly <- possibly(kraabi_alamlehe_url, NULL)
+```
+
+Kraabi kõigi aastate alamlehtede url-d
+```{r}
+alamlehe_url_raw <- map_df(aastad_url, kraabi_alamlehe_url_possibly)
+```
+
+Tee alamlehe url-dest vector
+```{r}
+alamlehe_url <- alamlehe_url_raw$value
+```
+
+
+Funktsioon, mis pärib kõigilt alamlehtedelt tulemuste lehe url-d
+```{r}
+kraabi_tulemuste_url <- function(x){
+  tulemuste_url <- read_html(x) %>% 
+    html_nodes("p:nth-child(5) a") %>% 
+    html_attr("href") %>% 
+    as_tibble() %>% 
+    mutate(alamlehe_url = x)
+  
+  return(tulemuste_url)
+}
+
+kraabi_tulemuste_url_possibly <- possibly(kraabi_tulemuste_url, NULL)
+```
+
+
+Kraabi kõigi tulemuste url-d
+```{r}
+tulemuste_url_raw <- map_df(alamlehe_url, kraabi_tulemuste_url_possibly)
+```
+
+Funktsioon, mis kraabib võistluse tulemused
+```{r}
+kraabi_voistluse_tulemused <- function(x){
+  
+  tulemuste_leht <- read_html(x)
+
+  info <- tulemuste_leht %>% 
+    html_node(".info") %>% 
+    html_text()
+
+  voistlus <- tulemuste_leht %>% 
+    html_node(".header") %>% 
+    html_text()
+
+  tabelid <- tulemuste_leht %>% 
+    html_table()
+  
+  # kraabi tulemuste tabelid
+  # kui lehel on kaks tabelit, siis esimene ratas ja teine jooks
+  if(length(tabelid) == 1) {
+    tulemused_raw <- tabelid %>% 
+      .[[1]]
+
+    tulemused <- tulemused_raw
+
+    names(tulemused) <- tulemused_raw[1,]
+
+    tulemused <- tulemused %>% 
+      filter(row_number() != 1) %>% 
+      clean_names() %>% 
+      mutate(ala = "jooks")
+  } else {
+    ratta_tulemused_raw <- tabelid %>% 
+      .[[1]]
+  
+    ratta_tulemused <- ratta_tulemused_raw
+
+    names(ratta_tulemused) <- ratta_tulemused_raw[1,]
+
+    ratta_tulemused <- ratta_tulemused %>% 
+      filter(row_number() != 1) %>% 
+      clean_names() %>% 
+      mutate(ala = "ratas")
+
+    jooksu_tulemused_raw <- tabelid %>% 
+      .[[2]]
+
+    jooksu_tulemused <- jooksu_tulemused_raw
+
+    names(jooksu_tulemused) <- jooksu_tulemused_raw[1,]
+
+    jooksu_tulemused <- jooksu_tulemused %>% 
+      filter(row_number() != 1) %>% 
+      clean_names() %>% 
+      mutate(ala = "jooks")
+  
+    tulemused <- ratta_tulemused %>% 
+      bind_rows(jooksu_tulemused)
+  }
+  
+  tulemused_kokku <- tulemused %>% 
+    mutate(info = info,
+           voistlus = voistlus,
+           tulemuste_url = x)
+  
+  return(tulemused_kokku)
+}
+
+
+kraabi_voistluse_tulemused_possibly <- possibly(kraabi_voistluse_tulemused, NULL)
+```
+
+Kraabi kõigi võistluste tulemused ühte tabelisse kokku
+```{r}
+voistkonna_tulemused_raw <- map_df(tulemuste_url_raw$value, kraabi_voistluse_tulemused_possibly)
+```
+
+Jäta alles ainult ühtsed andmeväljad
+```{r}
+voistkonna_tulemused <- voistkonna_tulemused_raw %>% 
+  filter(is.na(place), is.na(punkte)) %>% 
+  select(1:12)
+```
+
+Töötle võistkonna tulemuste tabelit
+```{r}
+voistkonna_tulemused_toodeldud <- voistkonna_tulemused %>% 
+  mutate_at(.vars = c("koht", "nr", "tulemus"), .funs = as.numeric,) %>%
+  mutate(voistlus = str_to_lower(str_squish(voistlus)),
+         voistlus = str_replace_all(voistlus, "icebug |sparta ", ""),
+         voistlus = str_replace_all(voistlus, "xt-", "xt "),
+         aeg = str_extract(aegpunktidtrahv, ".*:.*:.{2}"),
+         trahv = as.numeric(str_extract(aegpunktidtrahv, "-.*$|0$")),
+         asukoht = str_extract(info, "\\D*(?=X)"),
+         liikmed = str_split(liikmed, "\n"),
+         kuupaev = str_sub(voistlus, -10),
+         voistlus = str_squish(str_replace(voistlus, kuupaev, "")),
+         voistlus = str_replace(voistlus, "(?<=rogain).*", ""),
+         kuupaev = dmy(kuupaev),
+         # aeg = hms(aeg),
+         voistkonna_tulemuste_url = str_c("teamresult", nr, sep = "_"),
+         voistkonna_tulemuste_url = str_replace(tulemuste_url, "results", 
+                                                voistkonna_tulemuste_url)) %>% 
+  # võistlejad ühest "liikmed"" lahtrist eraldi ridadele
+  unnest(liikmed) %>%
+  rename(voistleja = liikmed) %>% 
+  mutate(voistleja = str_squish(voistleja),
+         voistleja = str_replace_all(voistleja, "EST| M | W | N |RUS|FIN|LAT| \\R", ""),
+         voistleja = str_to_title(str_squish(voistleja))) %>% 
+  filter(!is.na(koht),   # ainult need, kes lõpetasid võistluse
+         str_detect(voistlus, "talvero|kevadro|suvero|sügisro")) %>%  # ainult rogainisarja võistlused
+  select(-aegpunktidtrahv, -info)
+```
+
+Vektor urliga iga võistkonna tulemuste detailandmete kohta. Vajalik, et need eraldi välja kraapida.
+```{r}
+voistkonna_tulemuste_url <- voistkonna_tulemused_toodeldud %>%
+  distinct(voistkonna_tulemuste_url) %>% 
+  pull(voistkonna_tulemuste_url)
+```
+
+
+Funktsioon iga võistkonna detailsete tulemuste kraapimiseks
+```{r}
+kraabi_voistkonna_tulemused <- function(url){
+  Sys.sleep(runif(1, 0.5, 2))  # paus 0.5 - 2 sek
+  
+  voistkonna_tulemuste_leht <- read_html(url)
+  
+  voistkonna_tulemused_raw <- voistkonna_tulemuste_leht %>%
+    html_table(fill = TRUE) %>% 
+    .[[4]]
+    
+  voistkonna_tulemused <- voistkonna_tulemused_raw
+
+  names(voistkonna_tulemused) <- voistkonna_tulemused_raw[1,]
+
+  voistkonna_tulemused <- voistkonna_tulemused %>% 
+    clean_names() %>% 
+    filter(row_number() != 1) %>% 
+    mutate(voistkonna_tulemuste_url = url)
+  
+  return(voistkonna_tulemused)
+}
+
+kraabi_voistkonna_tulemused_possibly <- possibly(kraabi_voistkonna_tulemused, NULL)
+```
+
+Kraabi kõikide võistkondade detailsed tulemused
+```{r}
+system.time(
+voistkonna_detailsed_tulemused_raw <- map_df(voistkonna_tulemuste_url, 
+                                             kraabi_voistkonna_tulemused_possibly)
+)
+```
+
+
+Töötle võistkondade detailsete tulemuste tabelit
+```{r}
+voistkonna_detailsed_tulemused <- voistkonna_detailsed_tulemused_raw %>% 
+  mutate(kp_nr = coalesce(kp_nr, kp),
+         # vaheaeg = coalesce(vaheaeg, etapi_aeg),
+         punktid = coalesce(punktid, punkte),
+         # tempo_1km = coalesce(tempo_1km, kiirus_1km),
+         vaheaja_kell = dmy_hms(aeg),
+         # vaheaeg = hms(vaheaeg),
+         # tempo_1km = hms(tempo_1km),
+         # tempo_1_punkt = hms(x1_punkt),
+         punktid = as.numeric(str_extract(punktid, ".*(?=\\/)")),
+         distants = as.numeric(str_extract(distants, ".*(?=\\/)"))) %>% 
+  select(kp_nr, vaheaja_kell, punktid, distants, voistkonna_tulemuste_url) %>% 
+  filter(!is.na(vaheaja_kell), year(vaheaja_kell) != 1999)
+```
+
+Pane ühte tabelisse kokku võistkonna koondtulemus (ja võistlejate info) ning detailsete punktide vaheaejad ja distantsid.
+```{r}
+xt_rogain <- voistkonna_tulemused_toodeldud %>% 
+  left_join(voistkonna_detailsed_tulemused, by = "voistkonna_tulemuste_url")
+```
+
+Tutvu tulemustega
+```{r}
+glimpse(xt_rogain)
+```
+
+Salvesta kraabitud andmed rogainide kohta
+```{r}
+save(xt_rogain, file = "data/xt_rogain.RData")
+```
+
+Salvesta backupiks ka kraabitud raw data
+```{r}
+save(voistkonna_detailsed_tulemused_raw, file = "data/voistkonna_detailsed_tulemused_raw.RData")
+```
+
