@@ -1,6 +1,7 @@
 #### TEHA ####
 # tee araldi tab, kus saab valida võistleja/d või võistkonna/d, kellega ennast võrrelda
 # akternatiiv on võrreelda olemasolevatel graafikutel eraldi värviga märgi abil ennast konkurendiga
+# lisa graafik, mis näitab valitud võistkonna punktide võtmist (mitu 4, mitu 9, mitu 8 jne)
 ####
 
 library(shiny)
@@ -38,7 +39,7 @@ make_bold <- function(src, boulder) {
 # Kuna vaikimisi on ggplot graafikute tekstid liiga väikesed, siis tekita eraldi element, 
 # mis tuleb igale graafikule juurde liita
 theme_text_increase <- theme(
-  axis.text = element_text(size = rel(1.3)),
+  axis.text = element_text(size = rel(1.4)),
   axis.title.x = element_text(size = rel(1.3)),
   axis.title.y = element_text(size = rel(1.3)),
   plot.subtitle = element_text(size = rel(1.3)),
@@ -74,8 +75,8 @@ ui <- fluidPage(
       tabsetPanel(
         type = "tabs",
         tabPanel("Tulemus kokku",
-                 plotOutput("punktid_kokku"),
-                 plotOutput("koht_osakaal")
+                 plotOutput("punktid_kokku", height = 450),
+                 plotOutput("koht_osakaal", height = 450)
         ),
         tabPanel("Punktide võtmine cum",
                  plotOutput("punktid_cum", height = 600)
@@ -110,7 +111,7 @@ server <- function(input, output) {
       # tekita eraldi andmeveerg 30 minutise detailsusega
       # selle peale grupeerin ja summeerin punktid
       thicken(by = "vaheaja_kell_min", interval = "30 mins", rounding = "up") %>% 
-      select(-aeg_stardist) %>% 
+      select(-aeg_stardist, -vaheaja_kell_min) %>% 
       group_by(voistkond, voistlus, voistleja, vaheaja_kell_min_30_min, start, koht) %>%
       summarise_all(sum, na.rm = TRUE) %>% 
       group_by(voistlus, voistleja) %>%
